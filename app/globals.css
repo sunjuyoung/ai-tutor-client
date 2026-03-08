@@ -1,26 +1,69 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Brand */
+  --color-brand: #6C5CE7;
+  --color-brand-light: #A29BFE;
+  --color-brand-subtle: #EDE9FE;
+
+  /* Semantic */
+  --color-success: #00B894;
+  --color-warn: #F39C12;
+  --color-error: #E17055;
+  --color-info: #74B9FF;
+
+  /* Neutral */
+  --color-gray-900: #1A1A2E;
+  --color-gray-700: #4A4A6A;
+  --color-gray-400: #9B9BB5;
+  --color-gray-100: #F4F4F8;
+
+  /* Scenario Backgrounds */
+  --color-scenario-cafe: #FFF8F0;
+  --color-scenario-izakaya: #FFF5E6;
+  --color-scenario-office: #F0F4FF;
+
+  /* Border Radius */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-glow: 0 0 20px rgba(108, 92, 231, 0.15);
+
+  /* Font */
+  --font-sans: "Pretendard Variable", "Inter", "Noto Sans JP", sans-serif;
+
+  /* Animations */
+  --animate-bounce-sm: bounce-sm 1s ease-in-out infinite;
+  --animate-fade-in: fade-in 0.3s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@keyframes bounce-sm {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: #FFFFFF;
+  color: var(--color-gray-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
