@@ -46,6 +46,21 @@ interface HomeData {
     difficulty: number;
     estimated_minutes: number;
   }[];
+  /** Phase 3: 벤치마크 재도전 알림 (14일 경과 시나리오) */
+  benchmark_reminders: {
+    scenario_id: string;
+    scenario_title: string;
+    scenario_emoji: string;
+    persona_name: string;
+    days_since_last: number;
+    last_fluency_score: number | null;
+  }[];
+  /** Phase 3: 기억 기반 인사 (최근 대화 페르소나의 기억) */
+  memory_greeting: {
+    persona_name: string;
+    persona_emoji: string;
+    memory_content: string;
+  } | null;
 }
 
 export default function HomePage() {
@@ -79,7 +94,13 @@ export default function HomePage() {
 
   if (!data) return null;
 
-  const { user, recent_conversations, recommended_scenarios } = data;
+  const {
+    user,
+    recent_conversations,
+    recommended_scenarios,
+    benchmark_reminders = [],
+    memory_greeting,
+  } = data;
 
   return (
     <div className="px-5 pt-12 pb-6 max-w-lg mx-auto">
@@ -160,6 +181,51 @@ export default function HomePage() {
           </span>
         </div>
       </div>
+
+      {/* ─── Phase 3: 기억 기반 인사 카드 ─── */}
+      {memory_greeting && (
+        <div className="bg-white rounded-2xl p-4 shadow-sm mb-6 flex items-center gap-3">
+          <span className="text-3xl">{memory_greeting.persona_emoji}</span>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-gray-900">
+              {memory_greeting.persona_name}
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              &ldquo;{memory_greeting.memory_content}&rdquo;
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Phase 3: 벤치마크 재도전 알림 ─── */}
+      {benchmark_reminders.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">
+            성장 확인
+          </h2>
+          {benchmark_reminders.map((reminder) => (
+            <Link
+              key={reminder.scenario_id}
+              href={`/report/compare/${reminder.scenario_id}`}
+              className="flex items-center gap-3 p-4 bg-white rounded-xl border border-gray-100 hover:border-brand/30 transition-colors mb-2"
+            >
+              <span className="text-2xl">{reminder.scenario_emoji}</span>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-900">
+                  {reminder.scenario_title}
+                </p>
+                <p className="text-xs text-gray-400">
+                  {reminder.days_since_last}일 전에 도전했어요. 다시 도전하고
+                  성장을 확인해보세요!
+                </p>
+              </div>
+              <span className="text-xs text-brand font-semibold">
+                다시 도전!
+              </span>
+            </Link>
+          ))}
+        </section>
+      )}
 
       {/* ─── 최근 대화 ─── */}
       {recent_conversations.length > 0 && (

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 텍스트 대화 페이지
+ * 텍스트/음성 대화 페이지
  *
  * 핵심 흐름:
  * 1. 페르소나 + 시나리오 정보 로드
@@ -9,14 +9,21 @@
  * 3. 유저 메시지 전송 → SSE 스트리밍 응답
  * 4. 힌트 버튼 → HintBottomSheet (맥락 기반 표현 추천)
  * 5. 대화 종료 → XP/스트릭 보상 → 리포트 페이지 이동
+ *
+ * Phase 3.5 추가:
+ * 6. 마이크 버튼 → 음성 녹음 → STT → 텍스트 메시지 전송
+ * 7. AI 응답 완료 → TTS 자동 재생 (음성 모드 시)
+ * 8. ChatBubble 🔊 버튼 → 개별 메시지 TTS 재생
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, X, Lightbulb } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { playTTS } from "@/lib/tts";
 import { useChatStore, type ChatMessage } from "@/stores/chatStore";
-import { streamMessage } from "@/hooks/useSSE";
+import { streamMessage, streamAudioMessage } from "@/hooks/useSSE";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import ChatBubble from "@/components/chat/ChatBubble";
 import TypingIndicator from "@/components/chat/TypingIndicator";
 import TextInputBar from "@/components/chat/TextInputBar";
@@ -55,11 +62,14 @@ export default function ChatPage() {
     conversationId,
     messages,
     isStreaming,
+    isVoiceMode,
     setConversationId,
     setMessages,
     addMessage,
     appendToLastMessage,
     setIsStreaming,
+    setIsVoiceMode,
+    setIsPlayingAudio,
     reset,
   } = useChatStore();
 
@@ -80,6 +90,65 @@ export default function ChatPage() {
       });
     });
   }, []);
+
+  // Phase 3.5: AI 응답 완료 후 TTS 자동 재생 (음성 모드 시)
+  const autoPlayTTS = useCallback(
+    async (text: string) => {
+      if (!isVoiceMode || !personaId) return;
+      setIsPlayingAudio(true);
+      await playTTS(text, personaId, undefined, () => setIsPlayingAudio(false));
+    },
+    [isVoiceMode, personaId, setIsPlayingAudio]
+  );
+
+  // Phase 3.5: 음성 녹음 완료 → 서버로 전송
+  const handleAudioComplete = useCallback(
+    async (blob: Blob) => {
+      if (!conversationId || isStreaming) return;
+
+      // AI 응답 플레이스홀더 (STT 변환 대기 중에는 비어있음)
+      const aiPlaceholder: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: "",
+        created_at: new Date().toISOString(),
+      };
+
+      setIsStreaming(true);
+
+      await streamAudioMessage(conversationId, blob, {
+        // STT 변환 결과 → 유저 말풍선 추가
+        onTranscription: (text) => {
+          const userMsg: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "user",
+            content: text,
+            created_at: new Date().toISOString(),
+          };
+          addMessage(userMsg);
+          addMessage(aiPlaceholder);
+        },
+        onChunk: (chunk) => {
+          appendToLastMessage(chunk);
+        },
+        onDone: (fullText) => {
+          setIsStreaming(false);
+          // Phase 3.5: 음성 모드 자동 재생
+          autoPlayTTS(fullText);
+        },
+        onError: (error) => {
+          console.error("Audio stream error:", error);
+          setIsStreaming(false);
+        },
+      });
+    },
+    [conversationId, isStreaming, addMessage, appendToLastMessage, setIsStreaming, autoPlayTTS]
+  );
+
+  // Phase 3.5: 오디오 레코더 훅
+  const { isRecording, startRecording, stopRecording } = useAudioRecorder({
+    onComplete: handleAudioComplete,
+  });
 
   // ─── 대화 초기화 ───
   useEffect(() => {
@@ -138,7 +207,7 @@ export default function ChatPage() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // ─── 메시지 전송 (SSE 스트리밍) ───
+  // ─── 텍스트 메시지 전송 (SSE 스트리밍) ───
   const handleSend = async (text: string) => {
     if (!conversationId || isStreaming) return;
 
@@ -165,8 +234,10 @@ export default function ChatPage() {
       onChunk: (chunk) => {
         appendToLastMessage(chunk);
       },
-      onDone: () => {
+      onDone: (fullText) => {
         setIsStreaming(false);
+        // Phase 3.5: 음성 모드 자동 재생
+        autoPlayTTS(fullText);
       },
       onError: (error) => {
         console.error("Stream error:", error);
@@ -261,13 +332,21 @@ export default function ChatPage() {
               content={msg.content}
               timestamp={msg.created_at}
               avatarEmoji={avatarEmoji}
+              personaId={personaId}
             />
           )
         )}
       </div>
 
-      {/* ─── 텍스트 입력 바 ─── */}
-      <TextInputBar ref={inputRef} onSend={handleSend} disabled={isStreaming} />
+      {/* ─── 텍스트/음성 입력 바 ─── */}
+      <TextInputBar
+        ref={inputRef}
+        onSend={handleSend}
+        disabled={isStreaming}
+        isRecording={isRecording}
+        onStartRecording={startRecording}
+        onStopRecording={stopRecording}
+      />
 
       {/* ─── 힌트 바텀시트 ─── */}
       {conversationId && (

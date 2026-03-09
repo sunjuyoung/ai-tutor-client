@@ -1,12 +1,17 @@
 "use client";
 
 /**
- * 성장 페이지 — 학습 통계 + 과거 리포트 목록
+ * 성장 대시보드 — Phase 3 강화 버전
  *
- * 표시 항목:
- * - 주간 학습 요약 (총 대화 수, 평균 유창성 점수)
- * - 과거 교정 리포트 목록 → /report/{id} 링크
+ * UIUX.md 5.6절 기반:
+ * - 주간/월간 학습 요약 (총 대화 시간, 평균 유창성, 배운 표현, 오류 추이)
+ * - 문법 오류 추이 라인 차트 (Recharts)
+ * - 시나리오별 최고 유창성 점수 바
+ * - 자주 틀리는 패턴 Top 3
  * - XP/레벨 현황
+ * - 과거 리포트 목록
+ *
+ * API: GET /api/v1/growth?period=weekly|monthly
  */
 
 import { useEffect, useState } from "react";
@@ -14,8 +19,36 @@ import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type { CorrectionReport } from "@/types/report";
 import { useAuthStore } from "@/stores/authStore";
+import ErrorTrendChart from "@/components/growth/ErrorTrendChart";
+import ScenarioScoreBar from "@/components/growth/ScenarioScoreBar";
 
-/** 대화 목록 아이템 (리포트 유무 확인용) */
+/** GET /api/v1/growth 응답 타입 */
+interface GrowthData {
+  summary: {
+    total_duration_min: number;
+    total_conversations: number;
+    avg_fluency: number | null;
+    total_expressions: number;
+    total_errors: number;
+  };
+  error_trend: {
+    week_label: string;
+    week_start: string;
+    error_count: number;
+  }[];
+  scenario_scores: {
+    scenario_id: string;
+    title: string;
+    emoji: string;
+    best_fluency: number | null;
+  }[];
+  common_errors: {
+    pattern: string;
+    count: number;
+  }[];
+}
+
+/** 대화별 리포트 데이터 (목록 표시용) */
 interface ConversationItem {
   id: string;
   persona_id: string;
@@ -25,14 +58,12 @@ interface ConversationItem {
   duration_sec: number | null;
 }
 
-/** 페르소나 (이름/이모지 표시용) */
 interface Persona {
   id: string;
   name: string;
   icon_emoji: string;
 }
 
-/** 대화별 리포트 데이터 (목록 표시용) */
 interface ConversationReport {
   conversation: ConversationItem;
   persona: Persona | null;
@@ -41,30 +72,37 @@ interface ConversationReport {
 
 export default function GrowthPage() {
   const { user, fetchUser } = useAuthStore();
+  const [period, setPeriod] = useState<"weekly" | "monthly">("weekly");
+  const [growthData, setGrowthData] = useState<GrowthData | null>(null);
   const [items, setItems] = useState<ConversationReport[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchUser();
-    loadGrowthData();
   }, [fetchUser]);
 
-  async function loadGrowthData() {
+  // 기간 변경 시 데이터 다시 로드
+  useEffect(() => {
+    loadAllData();
+  }, [period]);
+
+  async function loadAllData() {
+    setLoading(true);
     try {
-      // 1. 완료된 대화 목록 로드 (최대 20개)
-      const conversations = await apiFetch<ConversationItem[]>(
-        "/api/v1/conversations?limit=20"
-      );
+      // 성장 대시보드 데이터 + 리포트 목록 병렬 로드
+      const [growth, conversations, personaList] = await Promise.all([
+        apiFetch<GrowthData>(`/api/v1/growth?period=${period}`),
+        apiFetch<ConversationItem[]>("/api/v1/conversations?limit=20"),
+        apiFetch<Persona[]>("/api/v1/personas"),
+      ]);
 
-      // 완료된 대화만 필터
-      const completed = conversations.filter((c) => c.ended_at !== null);
+      setGrowthData(growth);
 
-      // 2. 페르소나 목록 로드
-      const personaList = await apiFetch<Persona[]>("/api/v1/personas");
+      // 리포트 목록 구성
       const personaMap: Record<string, Persona> = {};
       personaList.forEach((p) => (personaMap[p.id] = p));
+      const completed = conversations.filter((c) => c.ended_at !== null);
 
-      // 3. 각 대화에 대해 리포트 시도 (실패해도 계속)
       const results: ConversationReport[] = await Promise.all(
         completed.map(async (conv) => {
           let report: CorrectionReport | null = null;
@@ -73,7 +111,7 @@ export default function GrowthPage() {
               `/api/v1/reports/${conv.id}`
             );
           } catch {
-            // 리포트 없거나 아직 처리 중 — 무시
+            // 리포트 없거나 처리 중
           }
           return {
             conversation: conv,
@@ -82,7 +120,6 @@ export default function GrowthPage() {
           };
         })
       );
-
       setItems(results);
     } catch {
       // 미로그인
@@ -91,74 +128,73 @@ export default function GrowthPage() {
     }
   }
 
-  // ─── 통계 계산 ───
-  const totalConversations = items.length;
-  const reportsWithScore = items.filter(
-    (i) => i.report?.fluency_score !== null && i.report?.fluency_score !== undefined
-  );
-  const avgFluency =
-    reportsWithScore.length > 0
-      ? Math.round(
-          reportsWithScore.reduce(
-            (sum, i) => sum + (i.report?.fluency_score || 0),
-            0
-          ) / reportsWithScore.length
-        )
-      : null;
-  const totalCorrections = items.reduce(
-    (sum, i) => sum + (i.report?.corrections?.length || 0),
-    0
-  );
-  const totalExpressions = items.reduce(
-    (sum, i) => sum + (i.report?.new_expressions?.length || 0),
-    0
-  );
-
   if (loading) {
     return (
-      <div className="px-5 pt-12 pb-6 max-w-lg mx-auto animate-pulse">
+      <div className="px-5 pt-12 pb-20 max-w-lg mx-auto animate-pulse">
         <div className="h-8 bg-gray-100 rounded w-36 mb-6" />
         <div className="h-24 bg-gray-100 rounded-xl mb-6" />
-        <div className="h-16 bg-gray-100 rounded-xl mb-3" />
-        <div className="h-16 bg-gray-100 rounded-xl mb-3" />
+        <div className="h-48 bg-gray-100 rounded-xl mb-6" />
+        <div className="h-24 bg-gray-100 rounded-xl mb-6" />
       </div>
     );
   }
 
-  return (
-    <div className="px-5 pt-12 pb-6 max-w-lg mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">나의 성장</h1>
+  const summary = growthData?.summary;
 
-      {/* ─── 학습 요약 카드 ─── */}
-      <div className="bg-white rounded-2xl p-5 shadow-sm mb-6">
-        <h2 className="text-sm font-semibold text-gray-400 mb-4">학습 요약</h2>
-        <div className="grid grid-cols-2 gap-4">
-          {/* 총 대화 수 */}
-          <div className="text-center">
-            <p className="text-2xl font-bold text-brand">
-              {totalConversations}
-            </p>
-            <p className="text-xs text-gray-400 mt-1">완료한 대화</p>
-          </div>
-          {/* 평균 유창성 */}
-          <div className="text-center">
-            <p className="text-2xl font-bold text-success">
-              {avgFluency !== null ? avgFluency : "-"}
-            </p>
-            <p className="text-xs text-gray-400 mt-1">평균 유창성</p>
-          </div>
-          {/* 교정 수 */}
-          <div className="text-center">
-            <p className="text-2xl font-bold text-warn">{totalCorrections}</p>
-            <p className="text-xs text-gray-400 mt-1">교정 항목</p>
-          </div>
-          {/* 배운 표현 */}
-          <div className="text-center">
-            <p className="text-2xl font-bold text-info">{totalExpressions}</p>
-            <p className="text-xs text-gray-400 mt-1">배운 표현</p>
+  return (
+    <div className="px-5 pt-12 pb-20 max-w-lg mx-auto">
+      {/* ─── 헤더 + 기간 필터 ─── */}
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">나의 성장</h1>
+        {/* 기간 드롭다운 */}
+        <select
+          value={period}
+          onChange={(e) => setPeriod(e.target.value as "weekly" | "monthly")}
+          className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-gray-700 bg-white"
+        >
+          <option value="weekly">주간</option>
+          <option value="monthly">월간</option>
+        </select>
+      </div>
+
+      {/* ─── 이번 주/월 요약 카드 ─── */}
+      {summary && (
+        <div className="bg-white rounded-2xl p-5 shadow-sm mb-6">
+          <h2 className="text-sm font-semibold text-gray-400 mb-4">
+            {period === "weekly" ? "이번 주" : "이번 달"} 요약
+          </h2>
+          <div className="grid grid-cols-2 gap-4">
+            {/* 총 대화 시간 */}
+            <div className="text-center">
+              <p className="text-2xl font-bold text-brand">
+                {summary.total_duration_min}분
+              </p>
+              <p className="text-xs text-gray-400 mt-1">총 대화 시간</p>
+            </div>
+            {/* 평균 유창성 */}
+            <div className="text-center">
+              <p className="text-2xl font-bold text-success">
+                {summary.avg_fluency !== null ? summary.avg_fluency : "-"}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">평균 유창성</p>
+            </div>
+            {/* 배운 표현 */}
+            <div className="text-center">
+              <p className="text-2xl font-bold text-info">
+                {summary.total_expressions}개
+              </p>
+              <p className="text-xs text-gray-400 mt-1">배운 표현</p>
+            </div>
+            {/* 문법 오류 */}
+            <div className="text-center">
+              <p className="text-2xl font-bold text-warn">
+                {summary.total_errors}개
+              </p>
+              <p className="text-xs text-gray-400 mt-1">문법 오류</p>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* ─── XP / 레벨 현황 ─── */}
       <div className="bg-brand-subtle rounded-xl p-4 mb-6 flex items-center gap-3">
@@ -176,6 +212,62 @@ export default function GrowthPage() {
           </p>
         </div>
       </div>
+
+      {/* ─── 문법 오류 추이 라인 차트 ─── */}
+      {growthData && growthData.error_trend.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">
+            문법 오류 추이
+          </h2>
+          <div className="bg-white rounded-2xl p-4 shadow-sm">
+            <ErrorTrendChart data={growthData.error_trend} />
+          </div>
+        </section>
+      )}
+
+      {/* ─── 시나리오별 성과 ─── */}
+      {growthData && growthData.scenario_scores.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">
+            시나리오별 성과
+          </h2>
+          <div className="bg-white rounded-2xl p-4 shadow-sm">
+            {growthData.scenario_scores.map((s) => (
+              <ScenarioScoreBar
+                key={s.scenario_id}
+                emoji={s.emoji}
+                title={s.title}
+                score={s.best_fluency}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ─── 자주 틀리는 패턴 Top 3 ─── */}
+      {growthData && growthData.common_errors.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">
+            자주 틀리는 패턴 Top 3
+          </h2>
+          <div className="bg-white rounded-2xl p-4 shadow-sm">
+            {growthData.common_errors.map((err, idx) => (
+              <div
+                key={err.pattern}
+                className="flex items-center gap-3 py-2 border-b border-gray-50 last:border-0"
+              >
+                <span className="text-sm font-bold text-brand w-6">
+                  {idx + 1}.
+                </span>
+                <span className="text-sm text-gray-700 flex-1">
+                  {err.pattern}
+                </span>
+                <span className="text-xs text-gray-400">({err.count}회)</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ─── 과거 리포트 목록 ─── */}
       <section>
@@ -218,7 +310,7 @@ export default function GrowthPage() {
                   </p>
                 </div>
 
-                {/* 유창성 점수 배지 (리포트 있을 때만) */}
+                {/* 유창성 점수 배지 */}
                 {report?.fluency_score !== null &&
                   report?.fluency_score !== undefined && (
                     <span
