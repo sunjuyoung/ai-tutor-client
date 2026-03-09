@@ -1,14 +1,20 @@
 "use client";
 
 /**
- * 텍스트 대화 페이지
+ * 대화 이어하기 페이지
  *
- * 핵심 흐름:
- * 1. 페르소나 + 시나리오 정보 로드
- * 2. 대화 생성 → AI 첫 인사 메시지 수신
- * 3. 유저 메시지 전송 → SSE 스트리밍 응답
- * 4. 힌트 버튼 → HintBottomSheet (맥락 기반 표현 추천)
- * 5. 대화 종료 → XP/스트릭 보상 → 리포트 페이지 이동
+ * 기존 채팅 페이지(/talk/[personaId]/[scenarioId])와 동일한 UI이지만,
+ * 새 대화를 생성하지 않고 기존 대화를 불러와 이어서 진행한다.
+ *
+ * 핵심 차이점:
+ * - 새 대화 생성(POST /conversations) 대신 기존 대화 조회(GET /conversations/{id})
+ * - 페르소나/시나리오 정보를 대화 상세 응답에서 추출 (별도 API 호출 불필요)
+ * - 이미 종료된 대화(ended_at !== null)는 리포트 페이지로 리다이렉트
+ * - AI 첫 인사 메시지를 새로 생성하지 않음 (기존 메시지 히스토리 사용)
+ *
+ * URL 패턴: /talk/resume/{conversationId}
+ * 레이아웃: (main)/layout.tsx의 정규식이 /talk/ 하위 2+ depth를 매칭하므로
+ *           BottomTabBar가 자동으로 숨겨진다.
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
@@ -22,22 +28,20 @@ import TypingIndicator from "@/components/chat/TypingIndicator";
 import TextInputBar from "@/components/chat/TextInputBar";
 import HintBottomSheet from "@/components/chat/HintBottomSheet";
 
-interface Scenario {
+/** GET /api/v1/conversations/{id} 응답 타입 */
+interface ConversationDetail {
   id: string;
-  title: string;
-  icon_emoji: string;
+  persona_id: string;
+  scenario_id: string;
+  ended_at: string | null;
+  message_count: number;
+  persona_name: string;
+  persona_emoji: string;
+  scenario_title: string;
+  scenario_emoji: string;
 }
 
-interface Persona {
-  id: string;
-  name: string;
-  icon_emoji: string;
-}
-
-interface ConversationResponse {
-  id: string;
-}
-
+/** GET /api/v1/conversations/{id}/messages 응답 타입 */
 interface MessageResponse {
   id: string;
   role: "user" | "assistant";
@@ -45,14 +49,12 @@ interface MessageResponse {
   created_at: string;
 }
 
-export default function ChatPage() {
+export default function ResumeChatPage() {
   const params = useParams();
   const router = useRouter();
-  const personaId = params.personaId as string;
-  const scenarioId = params.scenarioId as string;
+  const conversationId = params.conversationId as string;
 
   const {
-    conversationId,
     messages,
     isStreaming,
     setConversationId,
@@ -64,11 +66,11 @@ export default function ChatPage() {
   } = useChatStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const personaRef = useRef<Persona | null>(null);
-  const scenarioRef = useRef<Scenario | null>(null);
   const initializedRef = useRef(false);
   const inputRef = useRef<{ insertText: (text: string) => void } | null>(null);
 
+  // 대화 메타데이터 (페르소나/시나리오 정보)
+  const [convMeta, setConvMeta] = useState<ConversationDetail | null>(null);
   // 힌트 바텀시트 상태
   const [hintOpen, setHintOpen] = useState(false);
 
@@ -81,7 +83,7 @@ export default function ChatPage() {
     });
   }, []);
 
-  // ─── 대화 초기화 ───
+  // ─── 기존 대화 불러오기 ───
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
@@ -89,35 +91,23 @@ export default function ChatPage() {
     async function init() {
       reset();
 
-      // 페르소나 정보 로드
-      const persona = await apiFetch<Persona>(
-        `/api/v1/personas/${personaId}`
+      // 1. 대화 상세 조회 (페르소나/시나리오 메타데이터 포함)
+      const detail = await apiFetch<ConversationDetail>(
+        `/api/v1/conversations/${conversationId}`
       );
-      personaRef.current = persona;
 
-      // 시나리오 정보 (페르소나 상세에서 추출)
-      const detail = await apiFetch<{ scenarios: Scenario[] }>(
-        `/api/v1/personas/${personaId}`
-      );
-      scenarioRef.current =
-        detail.scenarios.find((s) => s.id === scenarioId) || null;
+      // 2. 이미 종료된 대화면 리포트 페이지로 리다이렉트
+      if (detail.ended_at) {
+        router.replace(`/report/${conversationId}`);
+        return;
+      }
 
-      // 대화 생성 → 서버에서 AI 첫 인사 메시지 생성
-      const conv = await apiFetch<ConversationResponse>(
-        "/api/v1/conversations",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            persona_id: personaId,
-            scenario_id: scenarioId,
-          }),
-        }
-      );
-      setConversationId(conv.id);
+      setConvMeta(detail);
+      setConversationId(detail.id);
 
-      // 메시지 로드 (AI 인사 포함)
+      // 3. 기존 메시지 히스토리 로드 (새 인사 메시지 생성 없음)
       const msgs = await apiFetch<MessageResponse[]>(
-        `/api/v1/conversations/${conv.id}/messages`
+        `/api/v1/conversations/${conversationId}/messages`
       );
       setMessages(
         msgs.map((m) => ({
@@ -131,7 +121,7 @@ export default function ChatPage() {
     }
 
     init();
-  }, [personaId, scenarioId, reset, setConversationId, setMessages, scrollToBottom]);
+  }, [conversationId, reset, setConversationId, setMessages, scrollToBottom, router]);
 
   // 메시지 추가/변경 시 자동 스크롤
   useEffect(() => {
@@ -139,8 +129,10 @@ export default function ChatPage() {
   }, [messages, scrollToBottom]);
 
   // ─── 메시지 전송 (SSE 스트리밍) ───
+  // 기존 채팅 페이지와 완전히 동일한 로직
   const handleSend = async (text: string) => {
-    if (!conversationId || isStreaming) return;
+    const convId = useChatStore.getState().conversationId;
+    if (!convId || isStreaming) return;
 
     // 유저 메시지 로컬 추가
     const userMsg: ChatMessage = {
@@ -161,7 +153,7 @@ export default function ChatPage() {
     addMessage(aiPlaceholder);
     setIsStreaming(true);
 
-    await streamMessage(conversationId, text, {
+    await streamMessage(convId, text, {
       onChunk: (chunk) => {
         appendToLastMessage(chunk);
       },
@@ -178,24 +170,24 @@ export default function ChatPage() {
 
   // ─── 대화 종료 → XP 보상 + 리포트 분석 트리거 ───
   const handleEnd = async () => {
-    if (conversationId) {
+    const convId = useChatStore.getState().conversationId;
+    if (convId) {
       // 1. 대화 종료 (XP/스트릭 자동 부여)
-      await apiFetch(`/api/v1/conversations/${conversationId}/end`, {
+      await apiFetch(`/api/v1/conversations/${convId}/end`, {
         method: "PATCH",
       });
       // 2. CrewAI 비동기 분석 트리거 (fire-and-forget)
-      apiFetch(`/api/v1/reports/conversations/${conversationId}/analyze`, {
+      apiFetch(`/api/v1/reports/conversations/${convId}/analyze`, {
         method: "POST",
       }).catch(() => {
         // 분석 트리거 실패는 치명적이지 않음
       });
       // 3. 리포트 페이지로 이동
-      const convId = conversationId;
       reset();
       router.push(`/report/${convId}`);
     } else {
       reset();
-      router.push(`/talk/${personaId}`);
+      router.push("/talk");
     }
   };
 
@@ -204,7 +196,8 @@ export default function ChatPage() {
     inputRef.current?.insertText(text);
   };
 
-  const avatarEmoji = personaRef.current?.icon_emoji || "🤖";
+  const avatarEmoji = convMeta?.persona_emoji || "🤖";
+  const storeConversationId = useChatStore((s) => s.conversationId);
 
   return (
     <div className="flex flex-col h-dvh bg-gray-50">
@@ -223,12 +216,12 @@ export default function ChatPage() {
 
         {/* 시나리오 제목 */}
         <span className="text-sm font-medium text-gray-700 truncate mx-4">
-          {scenarioRef.current?.icon_emoji} {scenarioRef.current?.title || "대화"}
+          {convMeta?.scenario_emoji} {convMeta?.scenario_title || "대화"}
         </span>
 
         {/* 오른쪽 버튼 그룹: 힌트 + 종료 */}
         <div className="flex items-center gap-2">
-          {/* 힌트 버튼 💡 */}
+          {/* 힌트 버튼 */}
           <button
             onClick={() => setHintOpen(true)}
             className="text-warn hover:text-warn/80 transition-colors"
@@ -236,7 +229,7 @@ export default function ChatPage() {
           >
             <Lightbulb size={20} />
           </button>
-          {/* 대화 종료 ✕ */}
+          {/* 대화 종료 */}
           <button
             onClick={handleEnd}
             className="text-gray-400 hover:text-error"
@@ -270,9 +263,9 @@ export default function ChatPage() {
       <TextInputBar ref={inputRef} onSend={handleSend} disabled={isStreaming} />
 
       {/* ─── 힌트 바텀시트 ─── */}
-      {conversationId && (
+      {storeConversationId && (
         <HintBottomSheet
-          conversationId={conversationId}
+          conversationId={storeConversationId}
           isOpen={hintOpen}
           onClose={() => setHintOpen(false)}
           onUseExpression={handleUseExpression}

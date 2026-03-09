@@ -53,5 +53,10 @@ export async function apiFetch<T = unknown>(
     throw new Error(body.detail || `API error: ${res.status}`);
   }
 
+  // DELETE 등 204 No Content 응답은 body가 없으므로 undefined 반환
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
   return res.json() as Promise<T>;
 }
